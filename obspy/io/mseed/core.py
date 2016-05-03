@@ -11,14 +11,11 @@ import ctypes as C
 import os
 import warnings
 from struct import pack
-import sys
 
 import numpy as np
 
 from obspy import Stream, Trace, UTCDateTime
 from obspy.core.util import NATIVE_BYTEORDER
-from obspy.core.util.deprecation_helpers import (
-    DynamicAttributeImportRerouteModule, ObsPyDeprecationWarning)
 from . import util
 from .headers import (DATATYPES, ENCODINGS, HPTERROR, HPTMODULUS, SAMPLETYPE,
                       SEED_CONTROL_HEADERS, UNSUPPORTED_ENCODINGS,
@@ -125,9 +122,9 @@ def _read_mseed(mseed_object, starttime=None, endtime=None, headonly=False,
     :param headonly: Determines whether or not to unpack the data or just
         read the headers.
     :type sourcename: str
-    :param sourcename: Source name has to have the structure
-        'network.station.location.channel' and can contain globbing characters.
-        Defaults to ``None``.
+    :param sourcename: Only read data with matching SEED ID (can contain
+        wildcards "?" and "*", e.g. "BW.UH2.*" or "*.??Z"). Defaults to
+        ``None``.
     :param reclen: If it is None, it will be automatically determined for every
         record. If it is known, just set it to the record length in bytes which
         will increase the reading speed slightly.
@@ -164,12 +161,12 @@ def _read_mseed(mseed_object, starttime=None, endtime=None, headonly=False,
     BW.UH3..EHZ | 2010-06-20T00:00:00.279999Z - ... | 200.0 Hz, 386 samples
 
     >>> from obspy import UTCDateTime
-    >>> st = read("/path/to/test.mseed",
-    ...           starttime=UTCDateTime("2003-05-29T02:16:00"),
-    ...           selection="NL.*.*.?HZ")
+    >>> st = read("/path/to/two_channels.mseed",
+    ...           starttime=UTCDateTime("2010-06-20T00:00:01"),
+    ...           sourcename="*.?HZ")
     >>> print(st)  # doctest: +ELLIPSIS
     1 Trace(s) in Stream:
-    NL.HGN.00.BHZ | 2003-05-29T02:15:59.993400Z - ... | 40.0 Hz, 5629 samples
+    BW.UH3..EHZ | 2010-06-20T00:00:00.999999Z - ... | 200.0 Hz, 242 samples
 
     Read with ``details=True`` to read more details of the file if present.
 
@@ -212,13 +209,6 @@ def _read_mseed(mseed_object, starttime=None, endtime=None, headonly=False,
         header_byteorder = 0
     elif header_byteorder in [1, "1", ">"]:
         header_byteorder = 1
-
-    # The quality flag is no more supported. Raise a warning.
-    if 'quality' in kwargs:
-        msg = 'The quality flag is no longer supported in this version of ' + \
-            'obspy.io.mseed. obspy.io.mseed.util has some functions with ' \
-            'similar behavior.'
-        warnings.warn(msg, category=ObsPyDeprecationWarning)
 
     # Parse some information about the file.
     if header_byteorder == 0:
@@ -340,7 +330,7 @@ def _read_mseed(mseed_object, starttime=None, endtime=None, headonly=False,
     # XXX: Do this properly!
     # Define Python callback function for use in C function. Return a long so
     # it hopefully works on 32 and 64 bit systems.
-    alloc_data = C.CFUNCTYPE(C.c_long, C.c_int, C.c_char)(allocate_data)
+    alloc_data = C.CFUNCTYPE(C.c_longlong, C.c_int, C.c_char)(allocate_data)
 
     # Collect exceptions. They cannot be raised in the callback as they
     # could never be caught then. They are collected an raised later on.
@@ -927,17 +917,6 @@ class MST(object):
         # This also frees the data of the associated datasamples pointer.
         clibmseed.mst_free(C.pointer(self.mst))
         del self.mst
-
-
-# Remove once 0.11 has been released.
-sys.modules[__name__] = DynamicAttributeImportRerouteModule(
-    name=__name__, doc=__doc__, locs=locals(),
-    original_module=sys.modules[__name__],
-    import_map={},
-    function_map={
-        'isMSEED': 'obspy.io.mseed.core._is_mseed',
-        'readMSEED': 'obspy.io.mseed.core._read_mseed',
-        'writeMSEED': 'obspy.io.mseed.core._write_mseed'})
 
 
 if __name__ == '__main__':

@@ -25,8 +25,7 @@ from obspy.core import compatibility
 from obspy.core.utcdatetime import UTCDateTime
 from obspy.core.util import AttribDict, create_empty_data_chunk
 from obspy.core.util.base import _get_function_from_entry_point
-from obspy.core.util.decorator import (
-    deprecated, raise_if_masked, skip_if_no_data)
+from obspy.core.util.decorator import raise_if_masked, skip_if_no_data
 from obspy.core.util.misc import flat_not_masked_contiguous, get_window_times
 
 
@@ -784,16 +783,6 @@ class Trace(object):
         out.data = data
         return out
 
-    @deprecated(
-        "'getId' has been renamed to "  # noqa
-        "'get_id'. Use that instead.")
-    def getId(self, *args, **kwargs):
-        '''
-        DEPRECATED: 'getId' has been renamed to
-        'get_id'. Use that instead.
-        '''
-        return self.get_id(*args, **kwargs)
-
     def get_id(self):
         """
         Return a SEED compatible identifier of the trace.
@@ -873,16 +862,17 @@ class Trace(object):
         from obspy.imaging.spectrogram import spectrogram
         return spectrogram(data=self.data, **kwargs)
 
-    def write(self, filename, format, **kwargs):
+    def write(self, filename, format=None, **kwargs):
         """
         Save current trace into a file.
 
         :type filename: str
         :param filename: The name of the file to write.
-        :type format: str
-        :param format: The format to write must be specified. See
+        :type format: str, optional
+        :param format: The format of the file to write. See
             :meth:`obspy.core.stream.Stream.write` method for possible
-            formats.
+            formats. If format is set to ``None`` it will be deduced
+            from file extension, whenever possible.
         :param kwargs: Additional keyword arguments passed to the underlying
             waveform writer method.
 
@@ -890,6 +880,11 @@ class Trace(object):
 
         >>> tr = Trace()
         >>> tr.write("out.mseed", format="MSEED")  # doctest: +SKIP
+
+        The ``format`` argument can be omitted, and the file format will be
+        deduced from file extension, whenever possible.
+
+        >>> tr.write("out.mseed")  # doctest: +SKIP
         """
         # we need to import here in order to prevent a circular import of
         # Stream and Trace classes
@@ -1614,12 +1609,11 @@ seismometer_correction_simulation.html#using-a-resp-file>`_.
             freq = self.stats.sampling_rate * 0.5 / float(factor)
             self.filter('lowpass_cheby_2', freq=freq, maxorder=12)
 
-        orig_dtype = self.data.dtype
-        new_dtype = np.float32 if orig_dtype.itemsize == 4 else np.float64
-
-        # resample in the frequency domain
-        x = rfft(np.require(self.data, dtype=new_dtype))
-        x = np.insert(x, 1, 0)
+        # resample in the frequency domain. Make sure the byteorder is native.
+        x = rfft(self.data.newbyteorder("="))
+        # Cast the value to be inserted to the same dtype as the array to avoid
+        # issues with numpy rule 'safe'.
+        x = np.insert(x, 1, x.dtype.type(0))
         if self.stats.npts % 2 == 0:
             x = np.append(x, [0])
         x_r = x[::2]
@@ -1655,7 +1649,6 @@ seismometer_correction_simulation.html#using-a-resp-file>`_.
         if num % 2 == 0:
             large_y = np.delete(large_y, -1)
         self.data = irfft(large_y) * (float(num) / float(self.stats.npts))
-        self.data = np.require(self.data, dtype=orig_dtype)
         self.stats.sampling_rate = sampling_rate
 
         return self
@@ -1861,7 +1854,7 @@ seismometer_correction_simulation.html#using-a-resp-file>`_.
     @_add_processing_info
     def detrend(self, type='simple', **options):
         """
-        Remove a linear trend from the trace.
+        Remove a trend from the trace.
 
         :type type: str, optional
         :param type: Method to use for detrending. Defaults to ``'simple'``.
@@ -1901,14 +1894,24 @@ seismometer_correction_simulation.html#using-a-resp-file>`_.
         type = type.lower()
         # retrieve function call from entry points
         func = _get_function_from_entry_point('detrend', type)
+
         # handle function specific settings
         if func.__module__.startswith('scipy'):
             # SciPy need to set the type keyword
             if type == 'demean':
                 type = 'constant'
             options['type'] = type
+            original_dtype = self.data.dtype
+
         # detrending
         self.data = func(self.data, **options)
+
+        # Ugly workaround for old scipy versions that might unnecessarily
+        # change the dtype of the data.
+        if func.__module__.startswith('scipy'):
+            if original_dtype == np.float32 and self.data.dtype != np.float32:
+                self.data = np.require(self.data, dtype=np.float32)
+
         return self
 
     @skip_if_no_data
@@ -2044,7 +2047,12 @@ seismometer_correction_simulation.html#using-a-resp-file>`_.
         else:
             taper = np.hstack((taper_sides[:wlen], np.ones(npts - 2 * wlen),
                                taper_sides[len(taper_sides) - wlen:]))
-        self.data = self.data * taper
+
+        # Convert data if it's not a floating point type.
+        if not np.issubdtype(self.data.dtype, float):
+            self.data = np.require(self.data, dtype=np.float64)
+
+        self.data *= taper
         return self
 
     @_add_processing_info
@@ -2056,7 +2064,9 @@ seismometer_correction_simulation.html#using-a-resp-file>`_.
         :param norm: If not ``None``, trace is normalized by dividing by
             specified value ``norm`` instead of dividing by its absolute
             maximum. If a negative value is specified then its absolute value
-            is used.
+            is used. If it is zero (either through a zero array or by being
+            passed), nothing will happen and the original array will not
+            change.
 
         If ``trace.data.dtype`` was integer it is changing to float.
 
@@ -2087,7 +2097,7 @@ seismometer_correction_simulation.html#using-a-resp-file>`_.
         ObsPy ...: normalize(norm=None)
         """
         # normalize, use norm-kwarg otherwise normalize to 1
-        if norm:
+        if norm is not None:
             norm = norm
             if norm < 0:
                 msg = "Normalizing with negative values is forbidden. " + \
@@ -2096,7 +2106,17 @@ seismometer_correction_simulation.html#using-a-resp-file>`_.
         else:
             norm = self.max()
 
-        self.data = self.data.astype(np.float64)
+        # Don't do anything for zero norm but raise a warning.
+        if not norm:
+            msg = ("Attempting to normalize by dividing through zero. This "
+                   "is not allowed and the data will thus not be changed.")
+            warnings.warn(msg)
+            return self
+
+        # Convert data if it's not a floating point type.
+        if not np.issubdtype(self.data.dtype, float):
+            self.data = np.require(self.data, dtype=np.float64)
+
         self.data /= abs(norm)
 
         return self
@@ -2367,7 +2387,7 @@ seismometer_correction_simulation.html#using-a-resp-file>`_.
             if not isinstance(self.stats.response, Response):
                 msg = ("Response attached to Trace.stats must be of type "
                        "obspy.core.inventory.response.Response "
-                       "(but is of type %s).") % type(response)
+                       "(but is of type %s).") % type(self.stats.response)
                 raise TypeError(msg)
             return self.stats.response
         elif inventories is None:
@@ -2560,16 +2580,6 @@ seismometer_correction_simulation.html#using-a-resp-file>`_.
         if plot:
             import matplotlib.pyplot as plt
 
-        if (isinstance(inventory, (str, native_str)) and
-                inventory.upper() in ("DISP", "VEL", "ACC")):
-            from obspy.core.util.deprecation_helpers import \
-                ObsPyDeprecationWarning
-            output = inventory
-            inventory = None
-            msg = ("The order of optional parameters in method "
-                   "remove_response has changed. 'output' is not accepted "
-                   "as first positional argument in the next release.")
-            warnings.warn(msg, category=ObsPyDeprecationWarning, stacklevel=3)
         response = self._get_response(inventory)
         # polynomial response using blockette 62 stage 0
         if not response.response_stages and response.instrument_polynomial:
@@ -2623,8 +2633,11 @@ seismometer_correction_simulation.html#using-a-resp-file>`_.
             ax6 = fig.add_subplot(326, sharex=ax4)
             for ax_ in (ax1, ax2, ax3, ax4, ax5, ax6):
                 ax_.grid(zorder=-10)
-            text = 'pre_filt: [{:.3g}, {:.3g}, {:.3g}, {:.3g}]'.format(
-                *pre_filt)
+            if pre_filt is None:
+                text = 'pre_filt: None'
+            else:
+                text = 'pre_filt: [{:.3g}, {:.3g}, {:.3g}, {:.3g}]'.format(
+                    *pre_filt)
             ax1.text(0.05, 0.1, text, ha="left", va="bottom",
                      transform=ax1.transAxes, fontsize="large", bbox=bbox,
                      zorder=5)
