@@ -227,7 +227,7 @@ class PPSD(object):
         NPZ_STORE_KEYS_VERSION_NUMBERS)
 
     def __init__(self, stats, metadata, skip_on_gaps=False,
-                 db_bins=(-200, -50, 1.), ppsd_length=3600.0, overlap=0.5,
+                 db_bins=None, ppsd_length=3600.0, overlap=0.5,
                  special_handling=None, period_smoothing_width_octaves=1.0,
                  period_step_octaves=0.125, period_limits=None, **kwargs):
         """
@@ -275,8 +275,14 @@ class PPSD(object):
                 used in the PPSD.
         :type db_bins: tuple of three ints/floats
         :param db_bins: Specify the lower and upper boundary and the width of
-                the db bins. The bin width might get adjusted to fit  a number
+                the db bins. The bin width might get adjusted to fit a number
                 of equally spaced bins in between the given boundaries.
+                Default values depend on the instrument type set with parameter
+                special_handling:
+                    for None or 'ringlaser':
+                        db_bins = (-200, -50, 1)
+                    for 'hydrophone':
+                        db_bins = (-80, 70, 1)
         :type ppsd_length: float, optional
         :param ppsd_length: Length of data segments passed to psd in seconds.
                 In the paper by [McNamara2004]_ a value of 3600 (1 hour) was
@@ -292,7 +298,8 @@ class PPSD(object):
             data other than seismometer recordings. Can be one of: 'ringlaser'
             (no instrument correction, just division by
             `metadata["sensitivity"]` of provided metadata dictionary),
-            'hydrophone' (no differentiation after instrument correction).
+            'hydrophone' (no differentiation after instrument correction and
+            adapted range of db values).
         :type period_smoothing_width_octaves: float
         :param period_smoothing_width_octaves: Determines over what
             period/frequency range the psd is smoothed around every central
@@ -319,7 +326,6 @@ class PPSD(object):
 
         # save things related to kwargs
         self.skip_on_gaps = skip_on_gaps
-        self.db_bins = db_bins
         self.ppsd_length = ppsd_length
         self.overlap = overlap
         self.special_handling = special_handling and special_handling.lower()
@@ -362,7 +368,15 @@ class PPSD(object):
             period_limits = (self.psd_periods[0], self.psd_periods[-1])
         self._setup_period_binning(
             period_smoothing_width_octaves, period_step_octaves, period_limits)
+
         # setup db binning
+        if db_bins is None:
+            if self.special_handling == 'hydrophone':
+                db_bins = (-80, 70, 1.)
+            else:
+                db_bins = (-200, -50, 1.)
+        self.db_bins = db_bins
+
         # Set up the binning for the db scale.
         num_bins = int((db_bins[1] - db_bins[0]) / db_bins[2])
         self._db_bin_edges = np.linspace(db_bins[0], db_bins[1],
@@ -1442,6 +1456,10 @@ class PPSD(object):
         ax.set_ylim(self.db_bin_edges[0], self.db_bin_edges[-1])
         if self.special_handling is None:
             ax.set_ylabel('Amplitude [$m^2/s^4/Hz$] [dB]')
+        elif self.special_handling is 'hydrophone':
+            ax.set_ylabel('Amplitude [$Pa^2/Hz$] [dB]')
+        elif self.special_handling is 'ringlaser':
+            ax.set_ylabel('Amplitude [$rad^2/s^2/Hz$] [dB]')
         else:
             ax.set_ylabel('Amplitude [dB]')
         ax.xaxis.set_major_formatter(FormatStrFormatter("%g"))
